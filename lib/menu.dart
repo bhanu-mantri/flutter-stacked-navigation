@@ -1,6 +1,7 @@
-import 'package:uuid/uuid.dart';
-
+/// Simple menu model (plain state, no listeners).
 class Menu {
+  static int _nextId = 0;
+
   final String id;
   final String title;
   Menu? parent;
@@ -11,19 +12,28 @@ class Menu {
   /// Use this so the UI can show a chevron even before children are loaded.
   bool loadsChildrenDynamically;
 
+  /// When true, children are refetched every time this menu is opened (e.g. live data).
+  /// Only applies when [loadsChildrenDynamically] is true or children were loaded dynamically.
+  bool loadChildrenEveryTime;
+
   Menu({
     required this.title,
     this.isActive = false,
     this.loadsChildrenDynamically = false,
-  }) : id = const Uuid().v4() {
-    items = [];
-  }
+    this.loadChildrenEveryTime = false,
+  }) : id = 'menu_${_nextId++}',
+       items = [];
 
-  Menu addMenu(String title, {bool loadsChildrenDynamically = false}) {
+  Menu addMenu(
+    String title, {
+    bool loadsChildrenDynamically = false,
+    bool loadChildrenEveryTime = false,
+  }) {
     final menu = Menu(
       title: title,
       isActive: false,
       loadsChildrenDynamically: loadsChildrenDynamically,
+      loadChildrenEveryTime: loadChildrenEveryTime,
     );
     menu.parent = this;
     items.add(menu);
@@ -42,6 +52,7 @@ class Menu {
     String? title,
     bool? isActive,
     bool? loadsChildrenDynamically,
+    bool? loadChildrenEveryTime,
     List<Menu>? items,
   }) {
     return Menu(
@@ -49,6 +60,8 @@ class Menu {
       isActive: isActive ?? this.isActive,
       loadsChildrenDynamically:
           loadsChildrenDynamically ?? this.loadsChildrenDynamically,
+      loadChildrenEveryTime:
+          loadChildrenEveryTime ?? this.loadChildrenEveryTime,
     )..items = items ?? this.items;
   }
 }

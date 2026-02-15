@@ -23,8 +23,15 @@ void _buildProductsMenu(Menu products) {
   final electronics = products.addMenu('Electronics');
   electronics.addMenu('Keyboard');
 
-  // Mouse has no children here; add them dynamically via onLoadChildren.
+  // Mouse: load children once, then cache.
   electronics.addMenu('Mouse', loadsChildrenDynamically: true);
+
+  // Recent: refetch children every time it's opened (e.g. live data).
+  electronics.addMenu(
+    'Recent',
+    loadsChildrenDynamically: true,
+    // loadChildrenEveryTime: true,
+  );
 
   final speaker = products.addMenu('Speaker');
   speaker.addMenu('JBL');

@@ -1,21 +1,64 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 
 import 'menu.dart';
+
+/// A [Page] that uses a slide-from-right transition. Replaces go_router's CustomTransitionPage.
+class _SlideTransitionPage extends Page<void> {
+  const _SlideTransitionPage({required this.child, super.key});
+  final Widget child;
+
+  @override
+  Route<void> createRoute(BuildContext context) {
+    return PageRouteBuilder<void>(
+      settings: this,
+      transitionDuration: const Duration(milliseconds: 300),
+      reverseTransitionDuration: const Duration(milliseconds: 300),
+      pageBuilder: (context, animation, secondaryAnimation) => child,
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        final offsetAnimation = Tween<Offset>(
+          begin: const Offset(1, 0),
+          end: Offset.zero,
+        ).animate(CurvedAnimation(parent: animation, curve: Curves.easeInOut));
+        return SlideTransition(position: offsetAnimation, child: child);
+      },
+    );
+  }
+}
 
 /// Controller for [StackedMenuNavigation]. Holds navigation state and mutates
 /// the supplied [root] menu's [Menu.isActive] to represent the current path.
 class StackedMenuController {
-  StackedMenuController({required Menu root, VoidCallback? onNavigate})
-    : _root = root,
-      _onNavigate = onNavigate;
+  StackedMenuController({
+    required Menu root,
+    Menu? initialSelectedLeaf,
+    VoidCallback? onNavigate,
+  }) : _root = root,
+       _selectedLeaf = initialSelectedLeaf,
+       _onNavigate = onNavigate {
+    selectedLeafNotifier.value = initialSelectedLeaf;
+  }
 
   Menu _root;
   Menu? _selectedLeaf;
   final VoidCallback? _onNavigate;
 
+  /// Notifier so route content can rebuild when selection changes (Navigator reuses routes by key).
+  final ValueNotifier<Menu?> selectedLeafNotifier = ValueNotifier<Menu?>(null);
+
   Menu get root => _root;
   Menu? get selectedLeaf => _selectedLeaf;
+
+  void _setSelectedLeaf(Menu? leaf) {
+    if (_selectedLeaf == leaf) return;
+    _selectedLeaf = leaf;
+    selectedLeafNotifier.value = leaf;
+    _notify();
+  }
+
+  /// Sets the selected leaf (e.g. after resolving [initialSelectedLeafPath]).
+  void setSelectedLeaf(Menu? leaf) {
+    _setSelectedLeaf(leaf);
+  }
 
   void attachRoot(Menu root) {
     _root = root;
@@ -23,6 +66,28 @@ class StackedMenuController {
   }
 
   void _notify() => _onNavigate?.call();
+
+  /// Sets the menu stack path to [menu] (and its ancestors). Use to open to a
+  /// given level, e.g. before setting [initialSelectedLeaf] so the stack shows
+  /// the path to that leaf's parent.
+  void setPathTo(Menu menu) {
+    final path = <Menu>[];
+    Menu? cur = menu;
+    while (cur != null) {
+      path.add(cur);
+      cur = cur.parent;
+    }
+    final pathFromRoot = path.reversed.toList();
+    for (final m in pathFromRoot) {
+      if (m.parent != null) {
+        for (final s in m.parent!.items) {
+          s.isActive = false;
+        }
+      }
+      m.isActive = true;
+    }
+    _notify();
+  }
 
   /// Path from root to the current (deepest active) menu. Does not include leaf.
   List<Menu> getCurrentPath() {
@@ -45,7 +110,7 @@ class StackedMenuController {
 
   void selectMenu(Menu menu) {
     if (menu.items.isEmpty) {
-      _selectedLeaf = menu;
+      _setSelectedLeaf(menu);
       _notify();
       return;
     }
@@ -95,21 +160,37 @@ class StackedMenuController {
 ///
 /// Loaded children are cached (same [rootMenu] tree, mutated in place). To fetch
 /// fresh data: use the refresh button on the menu level AppBar (when [onLoadChildren]
-/// is set), or set [loadChildrenEveryTime] true. In your loader, call [Menu.removeItems]
-/// before adding new items so the list is replaced, not appended.
+/// is set), or set [Menu.loadChildrenEveryTime] on specific items. In your loader,
+/// call [Menu.removeItems] before adding new items so the list is replaced, not appended.
+///
+/// Use [initialSelectedLeaf] or [initialSelectedLeafPath] to pre-select a leaf.
+/// The stack opens to that leaf's parent and the content panel shows that leaf.
+/// [initialSelectedLeafPath] works with dynamically loaded items (e.g. Products >
+/// Electronics > Mouse > Acer): children are loaded via [onLoadChildren] when needed.
+/// Back works as usual.
 class StackedMenuNavigation extends StatefulWidget {
   const StackedMenuNavigation({
     super.key,
     required this.rootMenu,
+    this.initialSelectedLeaf,
+    this.initialSelectedLeafPath,
     this.contentBuilder,
     this.menuWidth = 250,
     this.placeholder,
     this.onLoadChildren,
-    this.loadChildrenEveryTime = false,
   });
 
   /// Root of the menu tree. Can be replaced anytime; controller will use the new root.
   final Menu rootMenu;
+
+  /// If set, opens the stack to this leaf's parent and shows this leaf's content.
+  /// Must be a [Menu] already in the [rootMenu] tree (e.g. static leaf like Sony).
+  final Menu? initialSelectedLeaf;
+
+  /// Path of menu titles from root's children to the leaf (e.g. ['Products', 'Electronics', 'Mouse', 'Acer']).
+  /// Use for leaves under dynamically loaded menus: [onLoadChildren] is called for each level that has no children yet.
+  /// Ignored if [initialSelectedLeaf] is set.
+  final List<String>? initialSelectedLeafPath;
 
   /// Builds the content area when a leaf [Menu] is selected. If null, [placeholder] is used.
   final Widget Function(Menu leaf)? contentBuilder;
@@ -120,17 +201,11 @@ class StackedMenuNavigation extends StatefulWidget {
   /// Shown in the content area when no leaf is selected. Defaults to a simple container.
   final Widget? placeholder;
 
-  /// Called when the user taps a menu item that has no children (or every time if
-  /// [loadChildrenEveryTime] is true). Load data (e.g. from API) and add children via
-  /// [menu.addMenu]. Return when done; the item will then open as a branch or leaf.
+  /// Called when the user taps a menu item that has no children (or every time for
+  /// items with [Menu.loadChildrenEveryTime] true). Load data (e.g. from API) and
+  /// add children via [menu.addMenu]. Return when done; the item will then open as
+  /// a branch or leaf. Call [Menu.removeItems] before adding when refetching.
   final Future<void> Function(Menu menu)? onLoadChildren;
-
-  /// If true, [onLoadChildren] is called every time the user opens that menu (shows
-  /// loading each time; useful for refetch). If false (default), it is only called
-  /// when the menu has no children yet (cached after first load).
-  /// When true, your loader should clear children first (e.g. [Menu.removeItems])
-  /// before adding, to avoid duplicates when refetching.
-  final bool loadChildrenEveryTime;
 
   @override
   State<StackedMenuNavigation> createState() => _StackedMenuNavigationState();
@@ -145,8 +220,50 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
     super.initState();
     _controller = StackedMenuController(
       root: widget.rootMenu,
+      initialSelectedLeaf: widget.initialSelectedLeaf,
       onNavigate: () => setState(() {}),
     );
+    if (widget.initialSelectedLeafPath != null &&
+        widget.initialSelectedLeafPath!.isNotEmpty &&
+        widget.onLoadChildren != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _resolveInitialLeafPath();
+      });
+    } else if (widget.initialSelectedLeaf?.parent != null) {
+      _controller.setPathTo(widget.initialSelectedLeaf!.parent!);
+    }
+  }
+
+  /// Resolves [initialSelectedLeafPath] by walking the tree and loading dynamic children when needed.
+  Future<void> _resolveInitialLeafPath() async {
+    final path = widget.initialSelectedLeafPath!;
+    final loadChildren = widget.onLoadChildren!;
+    Menu cur = widget.rootMenu;
+    for (final name in path) {
+      Menu? next;
+      for (final m in cur.items) {
+        if (m.title == name) {
+          next = m;
+          break;
+        }
+      }
+      if (next == null && cur.loadsChildrenDynamically && cur.items.isEmpty) {
+        await loadChildren(cur);
+        for (final m in cur.items) {
+          if (m.title == name) {
+            next = m;
+            break;
+          }
+        }
+      }
+      if (next == null || !mounted) return;
+      cur = next;
+    }
+    if (!mounted) return;
+    if (cur.parent != null) {
+      _controller.setPathTo(cur.parent!);
+    }
+    _controller.setSelectedLeaf(cur);
   }
 
   @override
@@ -165,36 +282,26 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
     final pages = <Page<void>>[];
     for (var i = 0; i < path.length; i++) {
       final menu = path[i];
+      final isTopPage = i == path.length - 1;
       pages.add(
-        CustomTransitionPage<void>(
+        _SlideTransitionPage(
           key: ValueKey(menu.id),
           child: _MenuLevelScreen(
             menu: menu,
             showBackButton: i > 0,
-            selectedLeaf: selectedLeaf,
+            canPopToParent: isTopPage && path.length > 1,
+            selectedLeafNotifier: _controller.selectedLeafNotifier,
             controller: _controller,
             onLoadChildren: widget.onLoadChildren,
-            loadChildrenEveryTime: widget.loadChildrenEveryTime,
             loadingMenu: _loadingMenu,
             onLoadingComplete: () => setState(() => _loadingMenu = null),
             onOpenForLoading: (Menu item) {
-              setState(() => _loadingMenu = item);
+              _loadingMenu = item;
               _controller.pushMenu(item);
+              setState(() {});
             },
             setLoadingMenu: (Menu? menu) => setState(() => _loadingMenu = menu),
           ),
-          transitionDuration: const Duration(milliseconds: 300),
-          reverseTransitionDuration: const Duration(milliseconds: 300),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            final offsetAnimation =
-                Tween<Offset>(
-                  begin: const Offset(1, 0),
-                  end: Offset.zero,
-                ).animate(
-                  CurvedAnimation(parent: animation, curve: Curves.easeInOut),
-                );
-            return SlideTransition(position: offsetAnimation, child: child);
-          },
         ),
       );
     }
@@ -211,10 +318,8 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
           width: widget.menuWidth,
           child: Navigator(
             pages: pages,
-            onPopPage: (route, result) {
-              if (pages.length <= 1) return false;
+            onDidRemovePage: (_) {
               _controller.goBack();
-              return true;
             },
           ),
         ),
@@ -246,10 +351,10 @@ class _MenuLevelScreen extends StatefulWidget {
   const _MenuLevelScreen({
     required this.menu,
     required this.showBackButton,
-    required this.selectedLeaf,
+    required this.canPopToParent,
+    required this.selectedLeafNotifier,
     required this.controller,
     this.onLoadChildren,
-    this.loadChildrenEveryTime = false,
     this.loadingMenu,
     this.onLoadingComplete,
     this.onOpenForLoading,
@@ -258,10 +363,10 @@ class _MenuLevelScreen extends StatefulWidget {
 
   final Menu menu;
   final bool showBackButton;
-  final Menu? selectedLeaf;
+  final bool canPopToParent;
+  final ValueNotifier<Menu?> selectedLeafNotifier;
   final StackedMenuController controller;
   final Future<void> Function(Menu menu)? onLoadChildren;
-  final bool loadChildrenEveryTime;
   final Menu? loadingMenu;
   final VoidCallback? onLoadingComplete;
   final void Function(Menu menu)? onOpenForLoading;
@@ -305,6 +410,8 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
       if (!mounted) return;
       _loadStarted = false;
       widget.onLoadingComplete?.call();
+      // Rebuild this screen so the list shows newly loaded items (ListenableBuilder may not be in tree during load).
+      if (mounted) setState(() {});
       // If still no children after load, treat as leaf: pop this level and show content on the right.
       if (widget.menu.items.isEmpty) {
         widget.controller.goBack();
@@ -319,7 +426,7 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
         item.loadsChildrenDynamically &&
         widget.onLoadChildren != null;
     final refetchOnOpen =
-        widget.loadChildrenEveryTime &&
+        item.loadChildrenEveryTime &&
         widget.onLoadChildren != null &&
         item.items.isNotEmpty;
 
@@ -338,10 +445,9 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
   @override
   Widget build(BuildContext context) {
     final menu = widget.menu;
-    final selectedLeaf = widget.selectedLeaf;
     final showPageLoading = _isThisPageLoading;
 
-    return Scaffold(
+    final scaffold = Scaffold(
       appBar: AppBar(
         leading: widget.showBackButton
             ? IconButton(
@@ -365,33 +471,42 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
           ? const Center(child: CircularProgressIndicator())
           : (menu.items.isEmpty
                 ? const Center(child: Text('No sub-items'))
-                : ListView.builder(
-                    itemCount: menu.items.length,
-                    itemBuilder: (context, index) {
-                      final item = menu.items[index];
-                      final showChevron = item.hasChildrenOrLoadsDynamically;
-                      final isSelectedLeaf = selectedLeaf?.id == item.id;
-                      return ListTile(
-                        selected: isSelectedLeaf,
-                        selectedTileColor: Theme.of(
-                          context,
-                        ).colorScheme.primaryContainer,
-                        title: Text(
-                          item.title,
-                          style: TextStyle(
-                            fontWeight: isSelectedLeaf ? FontWeight.w600 : null,
-                          ),
-                        ),
-                        trailing: showChevron
-                            ? const Icon(
-                                Icons.chevron_right,
-                                color: Colors.grey,
-                              )
-                            : null,
-                        onTap: () => _onItemTap(item),
+                : ValueListenableBuilder<Menu?>(
+                    valueListenable: widget.selectedLeafNotifier,
+                    builder: (context, selectedLeaf, _) {
+                      return ListView.builder(
+                        itemCount: menu.items.length,
+                        itemBuilder: (context, index) {
+                          final item = menu.items[index];
+                          final showChevron =
+                              item.hasChildrenOrLoadsDynamically;
+                          final isSelectedLeaf = selectedLeaf?.id == item.id;
+                          return ListTile(
+                            selected: isSelectedLeaf,
+                            selectedTileColor: Theme.of(
+                              context,
+                            ).colorScheme.primaryContainer,
+                            title: Text(
+                              item.title,
+                              style: TextStyle(
+                                fontWeight: isSelectedLeaf
+                                    ? FontWeight.w600
+                                    : null,
+                              ),
+                            ),
+                            trailing: showChevron
+                                ? const Icon(
+                                    Icons.chevron_right,
+                                    color: Colors.grey,
+                                  )
+                                : null,
+                            onTap: () => _onItemTap(item),
+                          );
+                        },
                       );
                     },
                   )),
     );
+    return PopScope(canPop: widget.canPopToParent, child: scaffold);
   }
 }

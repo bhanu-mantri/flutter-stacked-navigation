@@ -11,12 +11,16 @@ class RootScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final rootMenu = ref.watch(menuProvider);
+    // Pre-select a leaf. Works with dynamic menus (Mouse's children are loaded via onLoadChildren).
+    // const initialPath = ['Products', 'Electronics', 'Mouse', 'Acer'];
+    // For static-only leaves you can use initialSelectedLeaf: _findByTitlePath(rootMenu, ['Products', 'Speaker', 'Sony'])
 
     return Scaffold(
       body: StackedMenuNavigation(
         rootMenu: rootMenu,
+        // initialSelectedLeafPath: initialPath,
         contentBuilder: (Menu leaf) => _LeafContent(menu: leaf),
-        placeholder: Container(color: Colors.red),
+        placeholder: Container(color: Colors.yellow),
         onLoadChildren: _loadChildren,
       ),
     );
@@ -30,6 +34,12 @@ class RootScreen extends ConsumerWidget {
       await Future.delayed(const Duration(milliseconds: 800));
       menu.addMenu('Acer');
       menu.addMenu('Dell');
+    } else if (menu.title == 'Recent') {
+      menu.removeItems();
+      await Future.delayed(const Duration(milliseconds: 600));
+      menu.addMenu('Item A');
+      menu.addMenu('Item B');
+      menu.addMenu('Item C');
     }
     // Add more cases for other dynamic menus, or call a real API and add items.
   }
