@@ -23,9 +23,8 @@ void _buildProductsMenu(Menu products) {
   final electronics = products.addMenu('Electronics');
   electronics.addMenu('Keyboard');
 
-  final mouse = electronics.addMenu('Mouse');
-  mouse.addMenu('Acer');
-  mouse.addMenu('Dell');
+  // Mouse has no children here; add them dynamically via onLoadChildren.
+  electronics.addMenu('Mouse', loadsChildrenDynamically: true);
 
   final speaker = products.addMenu('Speaker');
   speaker.addMenu('JBL');
