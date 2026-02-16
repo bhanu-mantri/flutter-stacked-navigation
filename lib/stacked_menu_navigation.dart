@@ -62,7 +62,11 @@ class StackedMenuController {
 
   void attachRoot(Menu root) {
     _root = root;
-    _onNavigate?.call();
+    // Defer notification to avoid setState during didUpdateWidget (causes '!_dirty' assertion).
+    final onNavigate = _onNavigate;
+    if (onNavigate != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => onNavigate());
+    }
   }
 
   void _notify() => _onNavigate?.call();
@@ -217,6 +221,9 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
   final ValueNotifier<Menu?> _loadingMenuNotifier = ValueNotifier<Menu?>(null);
   /// Notifier incremented when menu structure changes so menu-level screens rebuild.
   final ValueNotifier<int> _menuStructureVersion = ValueNotifier<int>(0);
+  /// When true, the next onDidRemovePage is from our own goBack() (e.g. AppBar back);
+  /// we must not call goBack() again in that callback.
+  bool _skipNextOnDidRemovePage = false;
 
   @override
   void initState() {
@@ -300,6 +307,10 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
             menuStructureVersion: _menuStructureVersion,
             loadingMenuNotifier: _loadingMenuNotifier,
             controller: _controller,
+            onBackPressed: () {
+              _skipNextOnDidRemovePage = true;
+              _controller.goBack();
+            },
             onLoadChildren: widget.onLoadChildren,
             onOpenForLoading: (Menu item) {
               _controller.pushMenu(item);
@@ -322,7 +333,14 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
           child: Navigator(
             pages: pages,
             onDidRemovePage: (_) {
-              _controller.goBack();
+              // Defer so we never call setState during build (Navigator may call this synchronously).
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (_skipNextOnDidRemovePage) {
+                  _skipNextOnDidRemovePage = false;
+                  return;
+                }
+                if (mounted) _controller.goBack();
+              });
             },
           ),
         ),
@@ -359,6 +377,7 @@ class _MenuLevelScreen extends StatefulWidget {
     required this.menuStructureVersion,
     required this.loadingMenuNotifier,
     required this.controller,
+    required this.onBackPressed,
     this.onLoadChildren,
     this.onOpenForLoading,
     this.setLoadingMenu,
@@ -371,6 +390,7 @@ class _MenuLevelScreen extends StatefulWidget {
   final ValueNotifier<int> menuStructureVersion;
   final ValueNotifier<Menu?> loadingMenuNotifier;
   final StackedMenuController controller;
+  final VoidCallback onBackPressed;
   final Future<void> Function(Menu menu, VoidCallback requestRebuild)? onLoadChildren;
   final void Function(Menu menu)? onOpenForLoading;
   final void Function(Menu? menu)? setLoadingMenu;
@@ -431,7 +451,7 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
         widget.loadingMenuNotifier.value = null;
         widget.controller.requestRebuild();
         if (menuToLoad.id == widget.menu.id && widget.menu.items.isEmpty) {
-          widget.controller.goBack();
+          widget.onBackPressed();
           widget.controller.selectMenu(widget.menu);
         }
       }
@@ -470,7 +490,7 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
             leading: widget.showBackButton
                 ? IconButton(
                     icon: const Icon(Icons.arrow_back),
-                    onPressed: widget.controller.goBack,
+                    onPressed: widget.onBackPressed,
                   )
                 : null,
             title: Text(menu.title),
