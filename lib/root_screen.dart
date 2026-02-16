@@ -28,18 +28,24 @@ class RootScreen extends ConsumerWidget {
 
   /// Example: load a menu's children dynamically (e.g. from API).
   /// Use [menu.removeItems] first so refresh replaces the list with fresh data.
-  static Future<void> _loadChildren(Menu menu) async {
+  /// Call [requestRebuild] after mutating the menu so the UI updates.
+  static Future<void> _loadChildren(
+    Menu menu,
+    VoidCallback requestRebuild,
+  ) async {
     if (menu.title == 'Mouse') {
       menu.removeItems();
       await Future.delayed(const Duration(milliseconds: 800));
       menu.addMenu('Acer');
       menu.addMenu('Dell');
+      // requestRebuild();
     } else if (menu.title == 'Recent') {
       menu.removeItems();
       await Future.delayed(const Duration(milliseconds: 600));
       menu.addMenu('Item A');
       menu.addMenu('Item B');
       menu.addMenu('Item C');
+      // requestRebuild();
     }
     // Add more cases for other dynamic menus, or call a real API and add items.
   }

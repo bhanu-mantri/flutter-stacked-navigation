@@ -67,6 +67,22 @@ class StackedMenuController {
 
   void _notify() => _onNavigate?.call();
 
+  /// Call after mutating the menu tree (e.g. [Menu.addMenu], [Menu.removeItems])
+  /// so the navigation UI rebuilds and shows the updated structure.
+  void requestRebuild() {
+    _notify();
+  }
+
+  /// Deactivates siblings of [menu] and sets [menu] as active.
+  void _activateOnly(Menu menu) {
+    if (menu.parent != null) {
+      for (final s in menu.parent!.items) {
+        s.isActive = false;
+      }
+    }
+    menu.isActive = true;
+  }
+
   /// Sets the menu stack path to [menu] (and its ancestors). Use to open to a
   /// given level, e.g. before setting [initialSelectedLeaf] so the stack shows
   /// the path to that leaf's parent.
@@ -77,14 +93,8 @@ class StackedMenuController {
       path.add(cur);
       cur = cur.parent;
     }
-    final pathFromRoot = path.reversed.toList();
-    for (final m in pathFromRoot) {
-      if (m.parent != null) {
-        for (final s in m.parent!.items) {
-          s.isActive = false;
-        }
-      }
-      m.isActive = true;
+    for (final m in path.reversed) {
+      _activateOnly(m);
     }
     _notify();
   }
@@ -111,23 +121,16 @@ class StackedMenuController {
   void selectMenu(Menu menu) {
     if (menu.items.isEmpty) {
       _setSelectedLeaf(menu);
-      _notify();
       return;
     }
-    for (final item in menu.parent!.items) {
-      item.isActive = false;
-    }
-    menu.isActive = true;
+    _activateOnly(menu);
     _notify();
   }
 
   /// Pushes a menu level (opens the page) even when it has no children yet.
   /// Use before loading children so the transitioned page can show loading.
   void pushMenu(Menu menu) {
-    for (final item in menu.parent!.items) {
-      item.isActive = false;
-    }
-    menu.isActive = true;
+    _activateOnly(menu);
     _notify();
   }
 
@@ -136,12 +139,7 @@ class StackedMenuController {
     if (path.length <= 1) return;
     path.last.isActive = false;
     final parent = path[path.length - 2];
-    if (parent.parent != null) {
-      for (final item in parent.parent!.items) {
-        item.isActive = false;
-      }
-      parent.isActive = true;
-    }
+    _activateOnly(parent);
     _notify();
   }
 }
@@ -203,9 +201,10 @@ class StackedMenuNavigation extends StatefulWidget {
 
   /// Called when the user taps a menu item that has no children (or every time for
   /// items with [Menu.loadChildrenEveryTime] true). Load data (e.g. from API) and
-  /// add children via [menu.addMenu]. Return when done; the item will then open as
-  /// a branch or leaf. Call [Menu.removeItems] before adding when refetching.
-  final Future<void> Function(Menu menu)? onLoadChildren;
+  /// add children via [menu.addMenu]. Call [requestRebuild] after mutating the menu
+  /// so the UI updates; it is also called automatically when this future completes.
+  /// Call [Menu.removeItems] before adding when refetching.
+  final Future<void> Function(Menu menu, VoidCallback requestRebuild)? onLoadChildren;
 
   @override
   State<StackedMenuNavigation> createState() => _StackedMenuNavigationState();
@@ -213,7 +212,11 @@ class StackedMenuNavigation extends StatefulWidget {
 
 class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
   late StackedMenuController _controller;
-  Menu? _loadingMenu;
+  /// Notifier so menu-level screens (inside Navigator routes) can react when loading
+  /// starts/ends without relying on receiving a new widget from the parent.
+  final ValueNotifier<Menu?> _loadingMenuNotifier = ValueNotifier<Menu?>(null);
+  /// Notifier incremented when menu structure changes so menu-level screens rebuild.
+  final ValueNotifier<int> _menuStructureVersion = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -221,7 +224,10 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
     _controller = StackedMenuController(
       root: widget.rootMenu,
       initialSelectedLeaf: widget.initialSelectedLeaf,
-      onNavigate: () => setState(() {}),
+      onNavigate: () {
+        setState(() {});
+        _menuStructureVersion.value++;
+      },
     );
     if (widget.initialSelectedLeafPath != null &&
         widget.initialSelectedLeafPath!.isNotEmpty &&
@@ -248,7 +254,7 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
         }
       }
       if (next == null && cur.loadsChildrenDynamically && cur.items.isEmpty) {
-        await loadChildren(cur);
+        await loadChildren(cur, () => _controller.requestRebuild());
         for (final m in cur.items) {
           if (m.title == name) {
             next = m;
@@ -291,25 +297,22 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
             showBackButton: i > 0,
             canPopToParent: isTopPage && path.length > 1,
             selectedLeafNotifier: _controller.selectedLeafNotifier,
+            menuStructureVersion: _menuStructureVersion,
+            loadingMenuNotifier: _loadingMenuNotifier,
             controller: _controller,
             onLoadChildren: widget.onLoadChildren,
-            loadingMenu: _loadingMenu,
-            onLoadingComplete: () => setState(() => _loadingMenu = null),
             onOpenForLoading: (Menu item) {
-              _loadingMenu = item;
               _controller.pushMenu(item);
-              setState(() {});
+              _loadingMenuNotifier.value = item;
             },
-            setLoadingMenu: (Menu? menu) => setState(() => _loadingMenu = menu),
+            setLoadingMenu: (Menu? m) => _loadingMenuNotifier.value = m,
           ),
         ),
       );
     }
 
     final content = selectedLeaf != null
-        ? (widget.contentBuilder != null
-              ? widget.contentBuilder!(selectedLeaf)
-              : _defaultLeafContent(context, selectedLeaf))
+        ? (widget.contentBuilder?.call(selectedLeaf) ?? _defaultLeafContent(context, selectedLeaf))
         : (widget.placeholder ?? _defaultPlaceholder(context));
 
     return Row(
@@ -353,10 +356,10 @@ class _MenuLevelScreen extends StatefulWidget {
     required this.showBackButton,
     required this.canPopToParent,
     required this.selectedLeafNotifier,
+    required this.menuStructureVersion,
+    required this.loadingMenuNotifier,
     required this.controller,
     this.onLoadChildren,
-    this.loadingMenu,
-    this.onLoadingComplete,
     this.onOpenForLoading,
     this.setLoadingMenu,
   });
@@ -365,10 +368,10 @@ class _MenuLevelScreen extends StatefulWidget {
   final bool showBackButton;
   final bool canPopToParent;
   final ValueNotifier<Menu?> selectedLeafNotifier;
+  final ValueNotifier<int> menuStructureVersion;
+  final ValueNotifier<Menu?> loadingMenuNotifier;
   final StackedMenuController controller;
-  final Future<void> Function(Menu menu)? onLoadChildren;
-  final Menu? loadingMenu;
-  final VoidCallback? onLoadingComplete;
+  final Future<void> Function(Menu menu, VoidCallback requestRebuild)? onLoadChildren;
   final void Function(Menu menu)? onOpenForLoading;
   final void Function(Menu? menu)? setLoadingMenu;
 
@@ -376,46 +379,61 @@ class _MenuLevelScreen extends StatefulWidget {
   State<_MenuLevelScreen> createState() => _MenuLevelScreenState();
 }
 
+/// Returns the [Menu] that this screen is responsible for loading, if any.
+Menu? _menuBeingLoadedFor(Menu screenMenu, Menu? loadingValue) {
+  if (loadingValue == null) return null;
+  if (loadingValue.id == screenMenu.id) return screenMenu;
+  try {
+    return screenMenu.items.firstWhere((m) => m.id == loadingValue.id);
+  } catch (_) {
+    return null;
+  }
+}
+
 class _MenuLevelScreenState extends State<_MenuLevelScreen> {
   bool _loadStarted = false;
-
-  bool get _isThisPageLoading => widget.loadingMenu?.id == widget.menu.id;
 
   @override
   void initState() {
     super.initState();
-    if (_isThisPageLoading && widget.onLoadChildren != null && !_loadStarted) {
-      _loadStarted = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _runLoad());
-    }
+    widget.loadingMenuNotifier.addListener(_onLoadingChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onLoadingChanged());
   }
 
   @override
-  void didUpdateWidget(_MenuLevelScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (_isThisPageLoading &&
-        widget.onLoadChildren != null &&
-        !_loadStarted &&
-        widget.loadingMenu?.id == widget.menu.id) {
-      _loadStarted = true;
-      _runLoad();
-    }
+  void dispose() {
+    widget.loadingMenuNotifier.removeListener(_onLoadingChanged);
+    super.dispose();
   }
 
-  Future<void> _runLoad() async {
+  void _onLoadingChanged() {
+    if (!mounted) return;
+    final menuToLoad = _menuBeingLoadedFor(widget.menu, widget.loadingMenuNotifier.value);
+    if (menuToLoad == null || widget.onLoadChildren == null || _loadStarted) return;
+    // When we pushed a page for this menu, only that page should run load.
+    // When refetching a child (no push), the parent screen runs load.
+    final path = widget.controller.getCurrentPath();
+    final loadingIsOnStack = path.any((m) => m.id == menuToLoad.id);
+    if (menuToLoad.id != widget.menu.id && loadingIsOnStack) return;
+    _loadStarted = true;
+    _runLoad(menuToLoad);
+  }
+
+  VoidCallback get _requestRebuild => widget.controller.requestRebuild;
+
+  Future<void> _runLoad(Menu menuToLoad) async {
     if (!mounted || widget.onLoadChildren == null) return;
     try {
-      await widget.onLoadChildren!(widget.menu);
+      await widget.onLoadChildren!(menuToLoad, _requestRebuild);
     } finally {
-      if (!mounted) return;
       _loadStarted = false;
-      widget.onLoadingComplete?.call();
-      // Rebuild this screen so the list shows newly loaded items (ListenableBuilder may not be in tree during load).
-      if (mounted) setState(() {});
-      // If still no children after load, treat as leaf: pop this level and show content on the right.
-      if (widget.menu.items.isEmpty) {
-        widget.controller.goBack();
-        widget.controller.selectMenu(widget.menu);
+      if (mounted) {
+        widget.loadingMenuNotifier.value = null;
+        widget.controller.requestRebuild();
+        if (menuToLoad.id == widget.menu.id && widget.menu.items.isEmpty) {
+          widget.controller.goBack();
+          widget.controller.selectMenu(widget.menu);
+        }
       }
     }
   }
@@ -430,13 +448,9 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
         widget.onLoadChildren != null &&
         item.items.isNotEmpty;
 
-    if (needsLoadThenOpen && widget.onOpenForLoading != null) {
+    // Open menu level and load (first time or refetch every time).
+    if ((needsLoadThenOpen || refetchOnOpen) && widget.onOpenForLoading != null) {
       widget.onOpenForLoading!(item);
-      return;
-    }
-    if (refetchOnOpen && widget.setLoadingMenu != null) {
-      widget.setLoadingMenu!(item);
-      widget.controller.selectMenu(item);
       return;
     }
     widget.controller.selectMenu(item);
@@ -445,68 +459,78 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
   @override
   Widget build(BuildContext context) {
     final menu = widget.menu;
-    final showPageLoading = _isThisPageLoading;
-
-    final scaffold = Scaffold(
-      appBar: AppBar(
-        leading: widget.showBackButton
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: widget.controller.goBack,
-              )
-            : null,
-        title: Text(menu.title),
-        actions: [
-          if (widget.onLoadChildren != null &&
-              widget.setLoadingMenu != null &&
-              !showPageLoading)
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Fetch fresh data',
-              onPressed: () => widget.setLoadingMenu!(menu),
-            ),
-        ],
-      ),
-      body: showPageLoading
-          ? const Center(child: CircularProgressIndicator())
-          : (menu.items.isEmpty
-                ? const Center(child: Text('No sub-items'))
-                : ValueListenableBuilder<Menu?>(
-                    valueListenable: widget.selectedLeafNotifier,
-                    builder: (context, selectedLeaf, _) {
-                      return ListView.builder(
-                        itemCount: menu.items.length,
-                        itemBuilder: (context, index) {
-                          final item = menu.items[index];
-                          final showChevron =
-                              item.hasChildrenOrLoadsDynamically;
-                          final isSelectedLeaf = selectedLeaf?.id == item.id;
-                          return ListTile(
-                            selected: isSelectedLeaf,
-                            selectedTileColor: Theme.of(
-                              context,
-                            ).colorScheme.primaryContainer,
-                            title: Text(
-                              item.title,
-                              style: TextStyle(
-                                fontWeight: isSelectedLeaf
-                                    ? FontWeight.w600
-                                    : null,
+    return ValueListenableBuilder<Menu?>(
+      valueListenable: widget.loadingMenuNotifier,
+      builder: (context, loadingValue, _) {
+        final showPageLoading = _menuBeingLoadedFor(menu, loadingValue) != null;
+        return PopScope(
+          canPop: widget.canPopToParent,
+          child: Scaffold(
+          appBar: AppBar(
+            leading: widget.showBackButton
+                ? IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: widget.controller.goBack,
+                  )
+                : null,
+            title: Text(menu.title),
+            actions: [
+              if (widget.onLoadChildren != null &&
+                  widget.setLoadingMenu != null &&
+                  !showPageLoading)
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Fetch fresh data',
+                  onPressed: () => widget.setLoadingMenu!(menu),
+                ),
+            ],
+          ),
+          body: showPageLoading
+              ? const Center(child: CircularProgressIndicator())
+              : ValueListenableBuilder<int>(
+                  valueListenable: widget.menuStructureVersion,
+                  builder: (context, _, __) {
+                    if (menu.items.isEmpty) {
+                      return const Center(child: Text('No sub-items'));
+                    }
+                    return ValueListenableBuilder<Menu?>(
+                      valueListenable: widget.selectedLeafNotifier,
+                      builder: (context, selectedLeaf, __) {
+                        return ListView.builder(
+                          itemCount: menu.items.length,
+                          itemBuilder: (context, index) {
+                            final item = menu.items[index];
+                            final showChevron =
+                                item.hasChildrenOrLoadsDynamically;
+                            final isSelectedLeaf = selectedLeaf?.id == item.id;
+                            return ListTile(
+                              selected: isSelectedLeaf,
+                              selectedTileColor: Theme.of(context).colorScheme.primaryContainer,
+                              title: Text(
+                                item.title,
+                                style: TextStyle(
+                                  fontWeight: isSelectedLeaf
+                                      ? FontWeight.w600
+                                      : null,
+                                ),
                               ),
-                            ),
-                            trailing: showChevron
-                                ? const Icon(
-                                    Icons.chevron_right,
-                                    color: Colors.grey,
-                                  )
-                                : null,
-                            onTap: () => _onItemTap(item),
-                          );
-                        },
-                      );
-                    },
-                  )),
+                              trailing: showChevron
+                                  ? const Icon(
+                                      Icons.chevron_right,
+                                      color: Colors.grey,
+                                    )
+                                  : null,
+                              onTap: () => _onItemTap(item),
+                            );
+                          },
+                        );
+                      },
+                    );
+                  },
+                ),
+          ),
+        );
+      },
     );
-    return PopScope(canPop: widget.canPopToParent, child: scaffold);
   }
 }

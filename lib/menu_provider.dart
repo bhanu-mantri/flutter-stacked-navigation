@@ -30,7 +30,7 @@ void _buildProductsMenu(Menu products) {
   electronics.addMenu(
     'Recent',
     loadsChildrenDynamically: true,
-    // loadChildrenEveryTime: true,
+    loadChildrenEveryTime: true,
   );
 
   final speaker = products.addMenu('Speaker');
