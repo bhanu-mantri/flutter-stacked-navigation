@@ -176,6 +176,7 @@ class StackedMenuNavigation extends StatefulWidget {
     required this.rootMenu,
     this.initialSelectedLeaf,
     this.initialSelectedLeafPath,
+    this.menuBuilder,
     this.contentBuilder,
     this.menuWidth = 250,
     this.placeholder,
@@ -194,6 +195,14 @@ class StackedMenuNavigation extends StatefulWidget {
   /// Ignored if [initialSelectedLeaf] is set.
   final List<String>? initialSelectedLeafPath;
 
+  /// Builds the left menu panel. If null, a default menu is shown.
+  final Widget Function(
+    List<Menu> menuItems,
+    void Function(Menu item) onTap,
+    Menu? selectedLeaf,
+  )?
+  menuBuilder;
+
   /// Builds the content area when a leaf [Menu] is selected. If null, [placeholder] is used.
   final Widget Function(Menu leaf)? contentBuilder;
 
@@ -208,7 +217,8 @@ class StackedMenuNavigation extends StatefulWidget {
   /// add children via [menu.addMenu]. Call [requestRebuild] after mutating the menu
   /// so the UI updates; it is also called automatically when this future completes.
   /// Call [Menu.removeItems] before adding when refetching.
-  final Future<void> Function(Menu menu, VoidCallback requestRebuild)? onLoadChildren;
+  final Future<void> Function(Menu menu, VoidCallback requestRebuild)?
+  onLoadChildren;
 
   @override
   State<StackedMenuNavigation> createState() => _StackedMenuNavigationState();
@@ -216,11 +226,14 @@ class StackedMenuNavigation extends StatefulWidget {
 
 class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
   late StackedMenuController _controller;
+
   /// Notifier so menu-level screens (inside Navigator routes) can react when loading
   /// starts/ends without relying on receiving a new widget from the parent.
   final ValueNotifier<Menu?> _loadingMenuNotifier = ValueNotifier<Menu?>(null);
+
   /// Notifier incremented when menu structure changes so menu-level screens rebuild.
   final ValueNotifier<int> _menuStructureVersion = ValueNotifier<int>(0);
+
   /// When true, the next onDidRemovePage is from our own goBack() (e.g. AppBar back);
   /// we must not call goBack() again in that callback.
   bool _skipNextOnDidRemovePage = false;
@@ -301,6 +314,7 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
           key: ValueKey(menu.id),
           child: _MenuLevelScreen(
             menu: menu,
+            menuBuilder: widget.menuBuilder,
             showBackButton: i > 0,
             canPopToParent: isTopPage && path.length > 1,
             selectedLeafNotifier: _controller.selectedLeafNotifier,
@@ -323,7 +337,8 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
     }
 
     final content = selectedLeaf != null
-        ? (widget.contentBuilder?.call(selectedLeaf) ?? _defaultLeafContent(context, selectedLeaf))
+        ? (widget.contentBuilder?.call(selectedLeaf) ??
+              _defaultLeafContent(context, selectedLeaf))
         : (widget.placeholder ?? _defaultPlaceholder(context));
 
     return Row(
@@ -371,6 +386,7 @@ class _StackedMenuNavigationState extends State<StackedMenuNavigation> {
 class _MenuLevelScreen extends StatefulWidget {
   const _MenuLevelScreen({
     required this.menu,
+    required this.menuBuilder,
     required this.showBackButton,
     required this.canPopToParent,
     required this.selectedLeafNotifier,
@@ -384,6 +400,12 @@ class _MenuLevelScreen extends StatefulWidget {
   });
 
   final Menu menu;
+  final Widget Function(
+    List<Menu> menuItems,
+    void Function(Menu item) onTap,
+    Menu? selectedLeaf,
+  )?
+  menuBuilder;
   final bool showBackButton;
   final bool canPopToParent;
   final ValueNotifier<Menu?> selectedLeafNotifier;
@@ -391,7 +413,8 @@ class _MenuLevelScreen extends StatefulWidget {
   final ValueNotifier<Menu?> loadingMenuNotifier;
   final StackedMenuController controller;
   final VoidCallback onBackPressed;
-  final Future<void> Function(Menu menu, VoidCallback requestRebuild)? onLoadChildren;
+  final Future<void> Function(Menu menu, VoidCallback requestRebuild)?
+  onLoadChildren;
   final void Function(Menu menu)? onOpenForLoading;
   final void Function(Menu? menu)? setLoadingMenu;
 
@@ -428,8 +451,12 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
 
   void _onLoadingChanged() {
     if (!mounted) return;
-    final menuToLoad = _menuBeingLoadedFor(widget.menu, widget.loadingMenuNotifier.value);
-    if (menuToLoad == null || widget.onLoadChildren == null || _loadStarted) return;
+    final menuToLoad = _menuBeingLoadedFor(
+      widget.menu,
+      widget.loadingMenuNotifier.value,
+    );
+    if (menuToLoad == null || widget.onLoadChildren == null || _loadStarted)
+      return;
     // When we pushed a page for this menu, only that page should run load.
     // When refetching a child (no push), the parent screen runs load.
     final path = widget.controller.getCurrentPath();
@@ -469,7 +496,8 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
         item.items.isNotEmpty;
 
     // Open menu level and load (first time or refetch every time).
-    if ((needsLoadThenOpen || refetchOnOpen) && widget.onOpenForLoading != null) {
+    if ((needsLoadThenOpen || refetchOnOpen) &&
+        widget.onOpenForLoading != null) {
       widget.onOpenForLoading!(item);
       return;
     }
@@ -486,68 +514,78 @@ class _MenuLevelScreenState extends State<_MenuLevelScreen> {
         return PopScope(
           canPop: widget.canPopToParent,
           child: Scaffold(
-          appBar: AppBar(
-            leading: widget.showBackButton
-                ? IconButton(
-                    icon: const Icon(Icons.arrow_back),
-                    onPressed: widget.onBackPressed,
-                  )
-                : null,
-            title: Text(menu.title),
-            actions: [
-              if (widget.onLoadChildren != null &&
-                  widget.setLoadingMenu != null &&
-                  !showPageLoading)
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  tooltip: 'Fetch fresh data',
-                  onPressed: () => widget.setLoadingMenu!(menu),
-                ),
-            ],
-          ),
-          body: showPageLoading
-              ? const Center(child: CircularProgressIndicator())
-              : ValueListenableBuilder<int>(
-                  valueListenable: widget.menuStructureVersion,
-                  builder: (context, _, __) {
-                    if (menu.items.isEmpty) {
-                      return const Center(child: Text('No sub-items'));
-                    }
-                    return ValueListenableBuilder<Menu?>(
-                      valueListenable: widget.selectedLeafNotifier,
-                      builder: (context, selectedLeaf, __) {
-                        return ListView.builder(
-                          itemCount: menu.items.length,
-                          itemBuilder: (context, index) {
-                            final item = menu.items[index];
-                            final showChevron =
-                                item.hasChildrenOrLoadsDynamically;
-                            final isSelectedLeaf = selectedLeaf?.id == item.id;
-                            return ListTile(
-                              selected: isSelectedLeaf,
-                              selectedTileColor: Theme.of(context).colorScheme.primaryContainer,
-                              title: Text(
-                                item.title,
-                                style: TextStyle(
-                                  fontWeight: isSelectedLeaf
-                                      ? FontWeight.w600
-                                      : null,
-                                ),
-                              ),
-                              trailing: showChevron
-                                  ? const Icon(
-                                      Icons.chevron_right,
-                                      color: Colors.grey,
-                                    )
-                                  : null,
-                              onTap: () => _onItemTap(item),
+            appBar: AppBar(
+              leading: widget.showBackButton
+                  ? IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: widget.onBackPressed,
+                    )
+                  : null,
+              title: Text(menu.title),
+              actions: [
+                if (widget.onLoadChildren != null &&
+                    widget.setLoadingMenu != null &&
+                    !showPageLoading)
+                  IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Fetch fresh data',
+                    onPressed: () => widget.setLoadingMenu!(menu),
+                  ),
+              ],
+            ),
+            body: showPageLoading
+                ? const Center(child: CircularProgressIndicator())
+                : ValueListenableBuilder<int>(
+                    valueListenable: widget.menuStructureVersion,
+                    builder: (context, _, __) {
+                      if (menu.items.isEmpty) {
+                        return const Center(child: Text('No sub-items'));
+                      }
+                      return ValueListenableBuilder<Menu?>(
+                        valueListenable: widget.selectedLeafNotifier,
+                        builder: (context, selectedLeaf, __) {
+                          if (widget.menuBuilder != null) {
+                            return widget.menuBuilder!(
+                              menu.items,
+                              _onItemTap,
+                              selectedLeaf,
                             );
-                          },
-                        );
-                      },
-                    );
-                  },
-                ),
+                          }
+                          return ListView.builder(
+                            itemCount: menu.items.length,
+                            itemBuilder: (context, index) {
+                              final item = menu.items[index];
+                              final showChevron =
+                                  item.hasChildrenOrLoadsDynamically;
+                              final isSelectedLeaf =
+                                  selectedLeaf?.id == item.id;
+                              return ListTile(
+                                selected: isSelectedLeaf,
+                                selectedTileColor: Theme.of(
+                                  context,
+                                ).colorScheme.primaryContainer,
+                                title: Text(
+                                  item.title,
+                                  style: TextStyle(
+                                    fontWeight: isSelectedLeaf
+                                        ? FontWeight.w600
+                                        : null,
+                                  ),
+                                ),
+                                trailing: showChevron
+                                    ? const Icon(
+                                        Icons.chevron_right,
+                                        color: Colors.grey,
+                                      )
+                                    : null,
+                                onTap: () => _onItemTap(item),
+                              );
+                            },
+                          );
+                        },
+                      );
+                    },
+                  ),
           ),
         );
       },

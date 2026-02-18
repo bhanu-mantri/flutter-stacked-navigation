@@ -19,6 +19,11 @@ class RootScreen extends ConsumerWidget {
       body: StackedMenuNavigation(
         rootMenu: rootMenu,
         // initialSelectedLeafPath: initialPath,
+        menuBuilder: (menuItems, onTap, selectedLeaf) => _MenuBuilder(
+          menuItems: menuItems,
+          onTap: onTap,
+          selectedLeaf: selectedLeaf,
+        ),
         contentBuilder: (Menu leaf) => _LeafContent(menu: leaf),
         placeholder: Container(color: Colors.yellow),
         onLoadChildren: _loadChildren,
@@ -37,6 +42,12 @@ class RootScreen extends ConsumerWidget {
       menu.removeItems();
       await Future.delayed(const Duration(milliseconds: 800));
       menu.addMenu('Acer');
+      menu.addMenu('Dell');
+      // requestRebuild();
+    } else if (menu.title == 'Scribes') {
+      menu.removeItems();
+      final scribes = await Future.delayed(const Duration(milliseconds: 800));
+      menu.addMenu({'title': '', 'subTitle': '', 'time': '', 'status': ''});
       menu.addMenu('Dell');
       // requestRebuild();
     } else if (menu.title == 'Recent') {
@@ -66,6 +77,63 @@ class _LeafContent extends StatelessWidget {
           style: Theme.of(context).textTheme.headlineMedium,
         ),
       ),
+    );
+  }
+}
+
+class _MenuBuilder extends StatelessWidget {
+  const _MenuBuilder({
+    required this.menuItems,
+    required this.onTap,
+    required this.selectedLeaf,
+  });
+
+  final List<Menu> menuItems;
+  final Function(Menu item) onTap;
+  final Menu? selectedLeaf;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      itemCount: menuItems.length,
+      itemBuilder: (context, index) {
+        final item = menuItems[index];
+        final showChevron = item.hasChildrenOrLoadsDynamically;
+        final isSelectedLeaf = selectedLeaf?.id == item.id;
+
+        if (item.parent != null && item.parent!.title == 'Mouse') {
+          return ListTile(
+            selected: isSelectedLeaf,
+            selectedTileColor: Theme.of(context).colorScheme.primaryContainer,
+            title: Text(
+              item.title,
+              style: TextStyle(
+                fontWeight: isSelectedLeaf ? FontWeight.w600 : null,
+                color: Colors.teal,
+              ),
+            ),
+            trailing: showChevron
+                ? const Icon(Icons.chevron_right, color: Colors.grey)
+                : null,
+            onTap: () => onTap(item),
+          );
+        }
+
+        return ListTile(
+          selected: isSelectedLeaf,
+          selectedTileColor: Theme.of(context).colorScheme.primaryContainer,
+          title: Text(
+            item.title,
+            style: TextStyle(
+              fontWeight: isSelectedLeaf ? FontWeight.w600 : null,
+            ),
+          ),
+          trailing: showChevron
+              ? const Icon(Icons.chevron_right, color: Colors.grey)
+              : null,
+          onTap: () => onTap(item),
+        );
+      },
     );
   }
 }

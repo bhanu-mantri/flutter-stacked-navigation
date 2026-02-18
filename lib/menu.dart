@@ -25,7 +25,7 @@ class Menu {
        items = [];
 
   Menu addMenu(
-    String title, {
+    dynamic title, {
     bool loadsChildrenDynamically = false,
     bool loadChildrenEveryTime = false,
   }) {
